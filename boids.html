@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>CS 418 Boids</title>
+    <script src="math.js"></script><!-- Basic math operations -->
+    <script src="matrices.js"></script><!-- Basic matrix operations -->
+<script>
+const IlliniBlue = new Float32Array([0.075, 0.16, 0.292, 1])
+const grey = new Float32Array([...normalize([76, 88, 107]), 1])
+const blackBackground = new Float32Array([0,0,0,1])
+const g = 9.80665 
+const eulerUpdatePosition = (p, v, t) => p.map((e, i) => e + v[i] * t)
+const eulerUpdateVelocity = (v, a, t) => v.map((e, i) => e + a[i] * t)
+const numBoids = 100
+const boidSpeed = 2
+const maxSpeed = 4
+const minSpeed = 1.5
+const aWeight = 2
+const cWeight = 0.008
+const sWeight = 0.08
+const bvWeight = 0.008
+const boundary = 0.9
+const wall = 1
+let startTime
+let prevTime
+let frameCount = 0
+
+/**
+ * @param boid the input boid
+ * Return an array of nearby boids
+ */
+function getFlockMates(boid) {
+    let radius = boid.supportRadius
+    let flockMates = []
+    boids.forEach(b => {
+        if (!Object.is(boid, b) && getDistance(boid, b) <= radius)
+            flockMates.push(b)
+    })
+    return flockMates
+}
+/**
+ * @param boid  input boid
+ * @param v     velocity to steer towards
+ * Steer v1 towards v2
+ */
+function steer(boid, v) {
+    let steeringForce = sub(v, boid.velocity)
+    let forceMagnitude = mag(steeringForce) 
+
+    if (forceMagnitude > maxSpeed) 
+        steeringForce = mul(normalize(steeringForce), maxSpeed)
+
+    boid.velocity = add(boid.velocity, steeringForce)
+}
+/**
+ * @param boid  input boid
+ * apply a velocity towards the center of the screen
+ */
+function getBoundingVelocity(boid) {
+    let d = sub([0,0,0], boid.position)
+    let v = mul(normalize(d), mag(d))
+    return v
+}
+
+/**
+ * @param boid   input boid
+ * @param v      input velocity
+ * apply a dampening force to boids near the border
+ */
+function dampenVelocity(boid, v) {
+  let ve = [...v]
+  let dampingFactor = 1
+  let distanceToBoundary = boundary - Math.abs(boid.position[0])
+
+  if (distanceToBoundary <= 0.5) {
+    dampingFactor = 0.5 + 0.5 * (distanceToBoundary / 0.5)
+  }
+
+  if (boid.position[0] < -boundary) {
+    ve[0] += dampingFactor
+  } else if (boid.position[0] > boundary) {
+    ve[0] -= dampingFactor
+  }
+
+  distanceToBoundary = boundary - Math.abs(boid.position[1])
+
+  if (distanceToBoundary <= 0.5) {
+    dampingFactor = 0.5 + 0.5 * (distanceToBoundary / 0.5)
+  }
+
+  if (boid.position[1] < -boundary) {
+    ve[1] += dampingFactor
+  } else if (boid.position[1] > boundary) {
+    ve[1] -= dampingFactor
+  }
+
+  return ve
+}
+
+/**
+ * @param boid          input boid
+ * @param repelForce    the magnitude of the reverse velocity to apply
+ * If a boid reaches the wall, repel it in the opposite direction
+ */
+function repelFromWalls(boid, repelForce) {
+    let repelVelocity = [0, 0, 0]
+
+    if (boid.position[0] <= -1 * wall || boid.position[0] >= wall) {
+        repelVelocity[0] = boid.position[0] <= 0 ? repelForce : -repelForce
+    }
+
+    if (boid.position[1] <= -1 * wall || boid.position[1] >= wall) {
+        repelVelocity[1] = boid.position[1] <= 0 ? repelForce : -repelForce
+    }
+
+    return repelVelocity
+}
+
+/**
+ * @param flockMates    array of flockMates
+ * @param boid          input boid
+ * Compute cohesion between flockmates
+ */
+function computeCohesion(flockMates, boid) {
+    let avgPosition = [0,0,0]
+    flockMates.forEach(b => { 
+        avgPosition = add(avgPosition, b.position)
+    })
+    avgPosition = div(avgPosition, flockMates.length)
+    let v = sub(avgPosition, boid.position)
+    return v
+}
+/**
+ * @param flockMates    array of flockMates
+ * @param boid          input boid
+ * Compute separation between flockmates based on inverse distance weighting
+ */
+function computeSeparation(flockMates, boid) {
+    let weightedPositions = [0, 0, 0];
+    let wSum = 0;
+
+    for (let i = 0; i < flockMates.length; i++) {
+        let d = getDistance(boid, flockMates[i])
+        let w = 1 / d;
+        wSum += w;
+        weightedPositions = add(weightedPositions, mul(flockMates[i].position, w))
+    }
+
+    if (flockMates.length === 1) {
+        wSum = 1 / getDistance(boid, flockMates[0])
+        weightedPositions = mul(boid.position, wSum)
+    }
+
+    let d = div(weightedPositions, wSum)
+    let speed = mag(boid.velocity)
+    let desiredHeading = Math.atan2(boid.position[1] - d[1], boid.position[0] - d[0])
+    let desiredVelocity = [speed * Math.cos(desiredHeading), speed * Math.sin(desiredHeading), 0]
+
+    return desiredVelocity
+
+}
+
+/**
+ * @param flockMates    array of flockMates
+ * @param boid          input boid
+ * compute the alignment between flockmates
+ */
+function computeAlignment(flockMates, boid) {
+    let avgVelocity = [0,0,0]
+    flockMates.forEach(b => {avgVelocity = add(avgVelocity, b.velocity)})
+    avgVelocity = div(avgVelocity, flockMates.length)
+    return avgVelocity
+}
+/**
+ * @param b1 boid1
+ * @param b2 boid2
+ * Get distance between two boids
+ */
+function getDistance(b1, b2) {
+    return mag(sub(b2.position, b1.position)) 
+}
+/**
+ * Creates boids 
+ */
+function createBoid(x, y, vx, vy, c) {
+    let boid = {
+        position: [x, y, 0],
+        velocity: [vx, vy, 0],
+        color: c,
+        supportRadius: 0.05,
+    }
+    boid.acceleration = [0,0,0]
+    return boid
+}
+
+/**
+ * Function to control animation
+ */
+function timeStep(miliseconds) {
+    frameCount += 1
+    let seconds = miliseconds / 1000
+    if (!startTime) startTime = seconds
+    if (!prevTime) prevTime = seconds
+    let elapsedTime = seconds - startTime
+    let deltaTime = seconds - prevTime
+    prevTime = seconds 
+    if (elapsedTime >= 60) {
+        startTime = null
+        prevTime = null
+        cancelAnimationFrame(window.pending)
+        setTimeout(() => {
+            frameCount = 0
+            setup()
+        }, 3)
+    } 
+    else { 
+        //draw(deltaTime ? deltaTime : 0.016) 
+        //draw(0.005) 
+        draw(0.005)
+        requestAnimationFrame(timeStep)
+        if(elapsedTime)
+            document.querySelector('#fps').innerHTML = (frameCount / elapsedTime).toFixed(0)
+    }
+}
+
+/**
+ * draw the scene and update boid positions
+ */ 
+function draw(deltaTime) {
+    gl.clearColor(...IlliniBlue)
+    gl.clear(gl.COLOR_BUFFER_BIT)
+    gl.useProgram(program)
+    gl.bindVertexArray(boidGeom.vao)
+    boids.forEach((boid) => {
+        let cv = [0, 0, 0]
+        let sv = [0, 0, 0]
+        let av = [0, 0, 0]
+        let rv = [0, 0, 0]
+        let velocity = [0, 0, 0]
+        let flockMates = getFlockMates(boid)
+        let flock = false
+        if (flockMates.length > 0) {
+            flock = true
+            cv = mul(normalize(computeCohesion(flockMates, boid)), cWeight)
+            sv = mul(normalize(computeSeparation(flockMates, boid)), sWeight)
+            av = mul(normalize(computeAlignment(flockMates, boid)), aWeight)
+        }
+
+        rv = repelFromWalls(boid, 15)
+        let bv = mul(normalize(getBoundingVelocity(boid)), bvWeight)
+        velocity = add(cv, sv)
+        velocity = add(velocity, av)
+        velocity = add(velocity, rv)
+        velocity = add(velocity, bv)
+        velocity = dampenVelocity(boid, velocity)
+
+        let speed = mag(velocity)
+        if (speed > maxSpeed) {
+            velocity = mul(normalize(velocity), maxSpeed)
+        } else if (speed < minSpeed) {
+            velocity = mul(normalize(velocity), minSpeed)
+        }
+
+        if (flock) {
+            steer(boid, velocity)
+        }
+        else {
+            boid.velocity = add(boid.velocity, repelFromWalls(boid, mag(boid.velocity) * 0.8))
+            boid.velocity = add(boid.velocity, bv)
+        }
+        
+        // Update the boid's position
+        let newPosition = eulerUpdatePosition(boid.position, boid.velocity, deltaTime)
+        boid.position = newPosition
+
+        let translate = m4translate(boid.position[1], boid.position[0], 0)
+        let scale = m4scale(0.1, 0.1, 0.1)
+        let rotate = m4rotZ(-1 * Math.atan2(boid.velocity[1] / 2 , boid.velocity[0] / 2))
+        gl.uniform4fv(gl.getUniformLocation(program, 'color'), boid.color)
+        let m = m4mult(translate, scale)
+        gl.uniformMatrix4fv(gl.getUniformLocation(program, 'mv'), false, m4mult(m, v))
+        gl.uniformMatrix4fv(gl.getUniformLocation(program, 'rotate'), false, rotate)
+        gl.uniformMatrix4fv(gl.getUniformLocation(program, 'p'), false, p)
+        gl.drawElements(boidGeom.mode, boidGeom.count, boidGeom.type, 0)
+    });
+}
+
+
+/**
+ * Compile, link, other option-independent setup
+ */
+ async function setup() {
+    window.gl = document.querySelector('canvas').getContext('webgl2',
+        // optional configuration object: see https://developer.mozilla.org/en-US/docs/Web/API/HTMLCanvasElement/getContext
+        {antialias: false, depth:true, preserveDrawingBuffer:true}
+    )
+    let vs = await fetch('vert_boids.glsl').then(res => res.text())
+    let fs = await fetch('frag_boids.glsl').then(res => res.text())
+    let boid2D = await fetch('boid2D.json').then(r=>r.json())
+    window.program = compileAndLinkGLSL(vs,fs)
+    window.boidGeom = setupGeomery(boid2D) 
+    window.boids = []
+    // gl.enable(gl.DEPTH_TEST)
+    gl.enable(gl.BLEND)
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
+    fillScreen()
+    setupScene()
+}
+/**
+ * Generate geometry, render the scene
+ */
+function setupScene() {
+    for (let i = 0; i < numBoids; i++) {
+        let angle = getRandomRange(0, 2 * Math.PI)
+        boids.push(createBoid(getRandomRange(-0.8, 0.8), getRandomRange(-0.8, 0.8), Math.cos(angle) * boidSpeed
+                    , Math.sin(angle) * boidSpeed, grey))
+    }
+    window.v = m4view([0,0,5], [0,0,0], [0,1,0])
+    timeStep()
+}
+
+/*
+ * Resizes the canvas to completely fill the screen
+ */
+function fillScreen() {
+    let canvas = document.querySelector('canvas')
+    document.body.style.margin = '0'
+    canvas.style.width = '100%'
+    canvas.style.height = '100%'
+    canvas.width = canvas.clientWidth
+    canvas.height = canvas.clientHeight
+    canvas.style.width = ''
+    canvas.style.height = ''
+    if (window.gl) {
+        gl.viewport(0,0, canvas.width, canvas.height)
+        window.p = m4perspNegZ(0.0, 20, 1, canvas.width, canvas.height)
+    }
+}
+window.addEventListener('load', setup)
+window.addEventListener('resize', fillScreen)
+</script>
+<script>
+/**
+ * Helper function from mozilla docs
+ */
+function getRandomInt(max) {
+  return Math.floor(Math.random() * max);
+}
+/**
+ * Helper function from mozilla docs
+ */
+function getRandomArbitrary(min, max) {
+  let value = Math.random() * (max - min) + min
+  let sign = Math.random()
+  return sign >= 0.5 ? value : -1 * value 
+}
+/**
+ * Helper function from mozilla docs
+ */
+ function getRandomRange(min, max) {
+  let value = Math.random() * (max - min) + min
+  return value 
+}
+/**
+ * Helper function to clamp numbers
+ */ 
+function clamp(x, min, max) {
+  return Math.min(Math.max(x, min), max)
+}
+
+/**
+ * Sends per-vertex data to the GPU and connects it to a VS input
+ * 
+ * @param data    a 2D array of per-vertex data (e.g. [[x,y,z,w],[x,y,z,w],...])
+ * @param program a compiled and linked GLSL program
+ * @param vsIn    the name of the vertex shader's `in` attribute
+ * @param mode    (optional) gl.STATIC_DRAW, gl.DYNAMIC_DRAW, etc
+ * 
+ * @returns the ID of the buffer in GPU memory; useful for changing data later
+ */
+function supplyDataBuffer(data, program, vsIn, mode) {
+    if (mode === undefined) mode = gl.STATIC_DRAW
+    
+    let buf = gl.createBuffer()
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf)
+    let f32 = new Float32Array(data.flat())
+    gl.bufferData(gl.ARRAY_BUFFER, f32, mode)
+    
+    let loc = gl.getAttribLocation(program, vsIn)
+    gl.vertexAttribPointer(loc, data[0].length, gl.FLOAT, false, 0, 0)
+    gl.enableVertexAttribArray(loc)
+    
+    return buf;
+}
+
+/**
+ * takes vs and fs and compiles them and links them
+ */   
+function compileAndLinkGLSL(vs_source, fs_source) {
+    let vs = gl.createShader(gl.VERTEX_SHADER)
+    gl.shaderSource(vs, vs_source)
+    gl.compileShader(vs)
+    if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) {
+        console.error(gl.getShaderInfoLog(vs))
+        throw Error("Vertex shader compilation failed")
+    }
+
+    let fs = gl.createShader(gl.FRAGMENT_SHADER)
+    gl.shaderSource(fs, fs_source)
+    gl.compileShader(fs)
+    if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
+        console.error(gl.getShaderInfoLog(fs))
+        throw Error("Fragment shader compilation failed")
+    }
+
+    let program = gl.createProgram()
+    gl.attachShader(program, vs)
+    gl.attachShader(program, fs)
+    gl.linkProgram(program)
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+        console.error(gl.getProgramInfoLog(program))
+        throw Error("Linking failed")
+    }
+    return program
+}
+   
+/**
+ * Creates a Vertex Array Object and puts into it all of the data in the given
+ * JSON structure, which should have the following form:
+ * 
+ * ````
+ * {"triangles": a list of of indices of vertices
+ * ,"attributes":
+ *  {name_of_vs_input_1: a list of 1-, 2-, 3-, or 4-vectors, one per vertex
+ *  ,name_of_vs_input_2: a list of 1-, 2-, 3-, or 4-vectors, one per vertex
+ *  }
+ * }
+ * ````
+ * 
+ * @returns an object with four keys:
+ *  - mode = the 1st argument for gl.drawElements
+ *  - count = the 2nd argument for gl.drawElements
+ *  - type = the 3rd argument for gl.drawElements
+ *  - vao = the vertex array object for use with gl.bindVertexArray
+ */
+ function setupGeomery(geom) {
+    var triangleArray = gl.createVertexArray()
+    gl.bindVertexArray(triangleArray)
+
+    for(let name in geom.attributes) {
+        let data = geom.attributes[name]
+        supplyDataBuffer(data, program, name)
+    }
+
+    var indices = new Uint16Array(geom.triangles.flat())
+    var indexBuffer = gl.createBuffer()
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer)
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW)
+
+    return {
+        mode: gl.TRIANGLES,
+        count: indices.length,
+        type: gl.UNSIGNED_SHORT,
+        vao: triangleArray
+    }
+}
+</script>
+    
+<style>
+html, body {
+    margin: 0;
+    padding: 0;
+}
+
+html, body {
+    height: 100%;
+    width: 100%;
+    overflow: hidden; 
+}
+
+.display {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+}
+
+.fullscreen-canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+</style>
+</head>
+<body>
+    <div id="fps" style="position: absolute; top: 10px; right: 10px; color: rgb(5, 255, 13); z-index: 1;"></div>
+    <div class="display"><canvas width="500" height="500"></canvas></div>
+</body>
+</html>
+        
+        
