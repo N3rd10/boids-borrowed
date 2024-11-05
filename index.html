@@ -7,7 +7,6 @@
     <script src="matrices.js"></script><!-- Basic matrix operations -->
 <script>
 const IlliniBlue = new Float32Array([0.075, 0.16, 0.292, 1])
-const grey = new Float32Array([...normalize([76, 88, 107]), 1])
 const blackBackground = new Float32Array([0,0,0,1])
 const g = 9.80665 
 const eulerUpdatePosition = (p, v, t) => p.map((e, i) => e + v[i] * t)
@@ -25,6 +24,25 @@ const wall = 1
 let startTime
 let prevTime
 let frameCount = 0
+
+function computeBoidColor(boid, flockMates) {
+    // Red: based on speed (velocity magnitude)
+    let speed = mag(boid.velocity)
+    let normalizedSpeed = (speed - minSpeed) / (maxSpeed - minSpeed)
+    let r = clamp(normalizedSpeed, 0, 1)
+    
+    // Green: based on number of flockmates (sociability)
+    let normalizedFlockSize = clamp(flockMates.length / (numBoids * 0.2), 0, 1)
+    let g = normalizedFlockSize
+    
+    // Blue: based on distance from center
+    let distanceFromCenter = mag(boid.position)
+    let normalizedDistance = clamp(1 - (distanceFromCenter / wall), 0, 1)
+    let b = normalizedDistance
+    
+    // Set alpha to 1
+    return new Float32Array([r, g, b, 1])
+}
 
 /**
  * @param boid the input boid
@@ -158,7 +176,6 @@ function computeSeparation(flockMates, boid) {
     let desiredVelocity = [speed * Math.cos(desiredHeading), speed * Math.sin(desiredHeading), 0]
 
     return desiredVelocity
-
 }
 
 /**
@@ -167,337 +184,109 @@ function computeSeparation(flockMates, boid) {
  * compute the alignment between flockmates
  */
 function computeAlignment(flockMates, boid) {
-    let avgVelocity = [0,0,0]
-    flockMates.forEach(b => {avgVelocity = add(avgVelocity, b.velocity)})
+    let avgVelocity = [0,0, 0]
+    flockMates.forEach(b => { 
+        avgVelocity = add(avgVelocity, b.velocity)
+    })
     avgVelocity = div(avgVelocity, flockMates.length)
     return avgVelocity
 }
-/**
- * @param b1 boid1
- * @param b2 boid2
- * Get distance between two boids
- */
-function getDistance(b1, b2) {
-    return mag(sub(b2.position, b1.position)) 
-}
-/**
- * Creates boids 
- */
-function createBoid(x, y, vx, vy, c) {
+
+function createBoid(x, y, vx, vy) {
     let boid = {
         position: [x, y, 0],
         velocity: [vx, vy, 0],
-        color: c,
+        color: new Float32Array([0.5, 0.5, 0.5, 1]), // Initial neutral color
         supportRadius: 0.05,
     }
     boid.acceleration = [0,0,0]
     return boid
 }
 
-/**
- * Function to control animation
- */
-function timeStep(miliseconds) {
-    frameCount += 1
-    let seconds = miliseconds / 1000
-    if (!startTime) startTime = seconds
-    if (!prevTime) prevTime = seconds
-    let elapsedTime = seconds - startTime
-    let deltaTime = seconds - prevTime
-    prevTime = seconds 
-    if (elapsedTime >= 60) {
-        startTime = null
-        prevTime = null
-        cancelAnimationFrame(window.pending)
-        setTimeout(() => {
-            frameCount = 0
-            setup()
-        }, 3)
-    } 
-    else { 
-        //draw(deltaTime ? deltaTime : 0.016) 
-        //draw(0.005) 
-        draw(0.005)
-        requestAnimationFrame(timeStep)
-        if(elapsedTime)
-            document.querySelector('#fps').innerHTML = (frameCount / elapsedTime).toFixed(0)
-    }
+let boids = []
+for (let i = 0; i < numBoids; i++) {
+    boids.push(createBoid(Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1))
 }
 
-/**
- * draw the scene and update boid positions
- */ 
-function draw(deltaTime) {
-    gl.clearColor(...IlliniBlue)
-    gl.clear(gl.COLOR_BUFFER_BIT)
-    gl.useProgram(program)
-    gl.bindVertexArray(boidGeom.vao)
-    boids.forEach((boid) => {
-        let cv = [0, 0, 0]
-        let sv = [0, 0, 0]
-        let av = [0, 0, 0]
-        let rv = [0, 0, 0]
-        let velocity = [0, 0, 0]
+function draw(gl, program) {
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
+    gl.uniform4fv(gl.getUniformLocation(program, 'color'), blackBackground)
+
+    for (let i = 0; i < boids.length; i++) {
+        let boid = boids[i]
         let flockMates = getFlockMates(boid)
-        let flock = false
-        if (flockMates.length > 0) {
-            flock = true
-            cv = mul(normalize(computeCohesion(flockMates, boid)), cWeight)
-            sv = mul(normalize(computeSeparation(flockMates, boid)), sWeight)
-            av = mul(normalize(computeAlignment(flockMates, boid)), aWeight)
-        }
 
-        rv = repelFromWalls(boid, 15)
-        let bv = mul(normalize(getBoundingVelocity(boid)), bvWeight)
-        velocity = add(cv, sv)
-        velocity = add(velocity, av)
-        velocity = add(velocity, rv)
-        velocity = add(velocity, bv)
-        velocity = dampenVelocity(boid, velocity)
+        let cohesion = computeCohesion(flockMates, boid)
+        let separation = computeSeparation(flockMates, boid)
+        let alignment = computeAlignment(flockMates, boid)
 
-        let speed = mag(velocity)
-        if (speed > maxSpeed) {
-            velocity = mul(normalize(velocity), maxSpeed)
-        } else if (speed < minSpeed) {
-            velocity = mul(normalize(velocity), minSpeed)
-        }
+        let boundingVelocity = getBoundingVelocity(boid)
+        let repelVelocity = repelFromWalls(boid, 0.1)
 
-        if (flock) {
-            steer(boid, velocity)
-        }
-        else {
-            boid.velocity = add(boid.velocity, repelFromWalls(boid, mag(boid.velocity) * 0.8))
-            boid.velocity = add(boid.velocity, bv)
-        }
-        
-        // Update the boid's position
-        let newPosition = eulerUpdatePosition(boid.position, boid.velocity, deltaTime)
-        boid.position = newPosition
+        let acceleration = [
+            cohesion[0] * cWeight + separation[0] * sWeight + alignment[0] * aWeight + boundingVelocity[0] * bvWeight + repelVelocity[0],
+            cohesion[1] * cWeight + separation[1] * sWeight + alignment[1] * aWeight + boundingVelocity[1] * bvWeight + repelVelocity[1],
+            0
+        ]
 
-        let translate = m4translate(boid.position[1], boid.position[0], 0)
-        let scale = m4scale(0.1, 0.1, 0.1)
-        let rotate = m4rotZ(-1 * Math.atan2(boid.velocity[1] / 2 , boid.velocity[0] / 2))
-        gl.uniform4fv(gl.getUniformLocation(program, 'color'), boid.color)
-        let m = m4mult(translate, scale)
-        gl.uniformMatrix4fv(gl.getUniformLocation(program, 'mv'), false, m4mult(m, v))
-        gl.uniformMatrix4fv(gl.getUniformLocation(program, 'rotate'), false, rotate)
-        gl.uniformMatrix4fv(gl.getUniformLocation(program, 'p'), false, p)
-        gl.drawElements(boidGeom.mode, boidGeom.count, boidGeom.type, 0)
-    });
-}
+        boid.acceleration = acceleration
+        boid.velocity = eulerUpdateVelocity(boid.velocity, acceleration, 0.1)
+        boid.position = eulerUpdatePosition(boid.position, boid.velocity, 0.1)
 
+        let newColor = computeBoidColor(boid, flockMates)
+        boid.color = newColor
+        gl.uniform4fv(gl.getUniformLocation(program, 'color'), newColor)
 
-/**
- * Compile, link, other option-independent setup
- */
- async function setup() {
-    window.gl = document.querySelector('canvas').getContext('webgl2',
-        // optional configuration object: see https://developer.mozilla.org/en-US/docs/Web/API/HTMLCanvasElement/getContext
-        {antialias: false, depth:true, preserveDrawingBuffer:true}
-    )
-    let vs = await fetch('vert_boids.glsl').then(res => res.text())
-    let fs = await fetch('frag_boids.glsl').then(res => res.text())
-    let boid2D = await fetch('boid2D.json').then(r=>r.json())
-    window.program = compileAndLinkGLSL(vs,fs)
-    window.boidGeom = setupGeomery(boid2D) 
-    window.boids = []
-    // gl.enable(gl.DEPTH_TEST)
-    gl.enable(gl.BLEND)
-    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
-    fillScreen()
-    setupScene()
-}
-/**
- * Generate geometry, render the scene
- */
-function setupScene() {
-    for (let i = 0; i < numBoids; i++) {
-        let angle = getRandomRange(0, 2 * Math.PI)
-        boids.push(createBoid(getRandomRange(-0.8, 0.8), getRandomRange(-0.8, 0.8), Math.cos(angle) * boidSpeed
-                    , Math.sin(angle) * boidSpeed, grey))
-    }
-    window.v = m4view([0,0,5], [0,0,0], [0,1,0])
-    timeStep()
-}
-
-/*
- * Resizes the canvas to completely fill the screen
- */
-function fillScreen() {
-    let canvas = document.querySelector('canvas')
-    document.body.style.margin = '0'
-    canvas.style.width = '100%'
-    canvas.style.height = '100%'
-    canvas.width = canvas.clientWidth
-    canvas.height = canvas.clientHeight
-    canvas.style.width = ''
-    canvas.style.height = ''
-    if (window.gl) {
-        gl.viewport(0,0, canvas.width, canvas.height)
-        window.p = m4perspNegZ(0.0, 20, 1, canvas.width, canvas.height)
+        // Draw the boid
+        gl.drawArrays(gl.POINTS, 0, 1)
     }
 }
-window.addEventListener('load', setup)
-window.addEventListener('resize', fillScreen)
+
+function main() {
+    let canvas = document.getElementById('canvas')
+    let gl = canvas.getContext('webgl')
+
+    if (!gl) {
+        alert('WebGL not supported')
+        return
+    }
+
+    gl.clearColor(0, 0, 0, 1)
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
+
+    let program = createProgram(gl, vertexShader, fragmentShader)
+    gl.useProgram(program)
+
+    let vertexBuffer = gl.createBuffer()
+    gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer)
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.01, -0.01, 0]), gl.STATIC_DRAW)
+
+    let positionLocation = gl.getAttribLocation(program, 'position')
+    gl.enableVertexAttribArray(positionLocation)
+    gl.vertexAttribPointer(positionLocation, 3, gl.FLOAT, false, 0, 0)
+
+    startTime = performance.now()
+    prevTime = startTime
+
+    function animate() {
+        let currentTime = performance.now()
+        let deltaTime = (currentTime - prevTime) / 1000
+        prevTime = currentTime
+
+        draw(gl, program)
+
+        frameCount++
+        requestAnimationFrame(animate)
+    }
+
+    animate()
+}
+
+main()
+
 </script>
-<script>
-/**
- * Helper function from mozilla docs
- */
-function getRandomInt(max) {
-  return Math.floor(Math.random() * max);
-}
-/**
- * Helper function from mozilla docs
- */
-function getRandomArbitrary(min, max) {
-  let value = Math.random() * (max - min) + min
-  let sign = Math.random()
-  return sign >= 0.5 ? value : -1 * value 
-}
-/**
- * Helper function from mozilla docs
- */
- function getRandomRange(min, max) {
-  let value = Math.random() * (max - min) + min
-  return value 
-}
-/**
- * Helper function to clamp numbers
- */ 
-function clamp(x, min, max) {
-  return Math.min(Math.max(x, min), max)
-}
-
-/**
- * Sends per-vertex data to the GPU and connects it to a VS input
- * 
- * @param data    a 2D array of per-vertex data (e.g. [[x,y,z,w],[x,y,z,w],...])
- * @param program a compiled and linked GLSL program
- * @param vsIn    the name of the vertex shader's `in` attribute
- * @param mode    (optional) gl.STATIC_DRAW, gl.DYNAMIC_DRAW, etc
- * 
- * @returns the ID of the buffer in GPU memory; useful for changing data later
- */
-function supplyDataBuffer(data, program, vsIn, mode) {
-    if (mode === undefined) mode = gl.STATIC_DRAW
-    
-    let buf = gl.createBuffer()
-    gl.bindBuffer(gl.ARRAY_BUFFER, buf)
-    let f32 = new Float32Array(data.flat())
-    gl.bufferData(gl.ARRAY_BUFFER, f32, mode)
-    
-    let loc = gl.getAttribLocation(program, vsIn)
-    gl.vertexAttribPointer(loc, data[0].length, gl.FLOAT, false, 0, 0)
-    gl.enableVertexAttribArray(loc)
-    
-    return buf;
-}
-
-/**
- * takes vs and fs and compiles them and links them
- */   
-function compileAndLinkGLSL(vs_source, fs_source) {
-    let vs = gl.createShader(gl.VERTEX_SHADER)
-    gl.shaderSource(vs, vs_source)
-    gl.compileShader(vs)
-    if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) {
-        console.error(gl.getShaderInfoLog(vs))
-        throw Error("Vertex shader compilation failed")
-    }
-
-    let fs = gl.createShader(gl.FRAGMENT_SHADER)
-    gl.shaderSource(fs, fs_source)
-    gl.compileShader(fs)
-    if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
-        console.error(gl.getShaderInfoLog(fs))
-        throw Error("Fragment shader compilation failed")
-    }
-
-    let program = gl.createProgram()
-    gl.attachShader(program, vs)
-    gl.attachShader(program, fs)
-    gl.linkProgram(program)
-    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-        console.error(gl.getProgramInfoLog(program))
-        throw Error("Linking failed")
-    }
-    return program
-}
-   
-/**
- * Creates a Vertex Array Object and puts into it all of the data in the given
- * JSON structure, which should have the following form:
- * 
- * ````
- * {"triangles": a list of of indices of vertices
- * ,"attributes":
- *  {name_of_vs_input_1: a list of 1-, 2-, 3-, or 4-vectors, one per vertex
- *  ,name_of_vs_input_2: a list of 1-, 2-, 3-, or 4-vectors, one per vertex
- *  }
- * }
- * ````
- * 
- * @returns an object with four keys:
- *  - mode = the 1st argument for gl.drawElements
- *  - count = the 2nd argument for gl.drawElements
- *  - type = the 3rd argument for gl.drawElements
- *  - vao = the vertex array object for use with gl.bindVertexArray
- */
- function setupGeomery(geom) {
-    var triangleArray = gl.createVertexArray()
-    gl.bindVertexArray(triangleArray)
-
-    for(let name in geom.attributes) {
-        let data = geom.attributes[name]
-        supplyDataBuffer(data, program, name)
-    }
-
-    var indices = new Uint16Array(geom.triangles.flat())
-    var indexBuffer = gl.createBuffer()
-    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer)
-    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW)
-
-    return {
-        mode: gl.TRIANGLES,
-        count: indices.length,
-        type: gl.UNSIGNED_SHORT,
-        vao: triangleArray
-    }
-}
-</script>
-    
-<style>
-html, body {
-    margin: 0;
-    padding: 0;
-}
-
-html, body {
-    height: 100%;
-    width: 100%;
-    overflow: hidden; 
-}
-
-.display {
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-}
-
-.fullscreen-canvas {
-    display: block;
-    width: 100%;
-    height: 100%;
-}
-</style>
 </head>
 <body>
-    <div id="fps" style="position: absolute; top: 10px; right: 10px; color: rgb(5, 255, 13); z-index: 1;"></div>
-    <div class="display"><canvas width="500" height="500"></canvas></div>
+    <canvas id="canvas" width="800" height="600"></canvas>
 </body>
 </html>
-        
-        
