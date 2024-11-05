@@ -3,290 +3,223 @@
 <head>
     <meta charset="utf-8">
     <title>CS 418 Boids</title>
-    <script src="math.js"></script><!-- Basic math operations -->
-    <script src="matrices.js"></script><!-- Basic matrix operations -->
-<script>
-const IlliniBlue = new Float32Array([0.075, 0.16, 0.292, 1])
-const blackBackground = new Float32Array([0,0,0,1])
-const g = 9.80665 
-const eulerUpdatePosition = (p, v, t) => p.map((e, i) => e + v[i] * t)
-const eulerUpdateVelocity = (v, a, t) => v.map((e, i) => e + a[i] * t)
-const numBoids = 100
-const boidSpeed = 2
-const maxSpeed = 4
-const minSpeed = 1.5
-const aWeight = 2
-const cWeight = 0.008
-const sWeight = 0.08
-const bvWeight = 0.008
-const boundary = 0.9
-const wall = 1
-let startTime
-let prevTime
-let frameCount = 0
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gl-matrix/2.8.1/gl-matrix-min.js"></script>
+    <script id="vertex-shader" type="x-shader/x-vertex">
+        attribute vec2 a_position;
+        uniform vec2 u_resolution;
+        uniform vec2 u_translation;
 
-function computeBoidColor(boid, flockMates) {
-    // Red: based on speed (velocity magnitude)
-    let speed = mag(boid.velocity)
-    let normalizedSpeed = (speed - minSpeed) / (maxSpeed - minSpeed)
-    let r = clamp(normalizedSpeed, 0, 1)
-    
-    // Green: based on number of flockmates (sociability)
-    let normalizedFlockSize = clamp(flockMates.length / (numBoids * 0.2), 0, 1)
-    let g = normalizedFlockSize
-    
-    // Blue: based on distance from center
-    let distanceFromCenter = mag(boid.position)
-    let normalizedDistance = clamp(1 - (distanceFromCenter / wall), 0, 1)
-    let b = normalizedDistance
-    
-    // Set alpha to 1
-    return new Float32Array([r, g, b, 1])
-}
+        void main() {
+            vec2 position = (a_position + u_translation) / u_resolution * 2.0 - 1.0;
+            gl_Position = vec4(position * vec2(1, -1), 0, 1);
+            gl_PointSize = 5.0;
+        }
+    </script>
+    <script id="fragment-shader" type="x-shader/x-fragment">
+        precision mediump float;
+        uniform vec4 u_color;
 
-/**
- * @param boid the input boid
- * Return an array of nearby boids
- */
-function getFlockMates(boid) {
-    let radius = boid.supportRadius
-    let flockMates = []
-    boids.forEach(b => {
-        if (!Object.is(boid, b) && getDistance(boid, b) <= radius)
-            flockMates.push(b)
-    })
-    return flockMates
-}
-/**
- * @param boid  input boid
- * @param v     velocity to steer towards
- * Steer v1 towards v2
- */
-function steer(boid, v) {
-    let steeringForce = sub(v, boid.velocity)
-    let forceMagnitude = mag(steeringForce) 
+        void main() {
+            gl_FragColor = u_color;
+        }
+    </script>
+    <script>
+        const numBoids = 100;
+        const maxSpeed = 100;
+        const minSpeed = 50;
+        const visualRange = 50;
+        const centeringFactor = 0.005;
+        const avoidFactor = 0.05;
+        const matchingFactor = 0.05;
+        const turnFactor = 1;
+        const margin = 100;
+        const boids = [];
 
-    if (forceMagnitude > maxSpeed) 
-        steeringForce = mul(normalize(steeringForce), maxSpeed)
+        function initBoids(width, height) {
+            for (let i = 0; i < numBoids; i++) {
+                boids.push({
+                    x: Math.random() * width,
+                    y: Math.random() * height,
+                    dx: Math.random() * 10 - 5,
+                    dy: Math.random() * 10 - 5,
+                    color: [Math.random(), Math.random(), Math.random(), 1]
+                });
+            }
+        }
 
-    boid.velocity = add(boid.velocity, steeringForce)
-}
-/**
- * @param boid  input boid
- * apply a velocity towards the center of the screen
- */
-function getBoundingVelocity(boid) {
-    let d = sub([0,0,0], boid.position)
-    let v = mul(normalize(d), mag(d))
-    return v
-}
+        function distance(boid1, boid2) {
+            return Math.sqrt(
+                (boid1.x - boid2.x) * (boid1.x - boid2.x) +
+                (boid1.y - boid2.y) * (boid1.y - boid2.y)
+            );
+        }
 
-/**
- * @param boid   input boid
- * @param v      input velocity
- * apply a dampening force to boids near the border
- */
-function dampenVelocity(boid, v) {
-  let ve = [...v]
-  let dampingFactor = 1
-  let distanceToBoundary = boundary - Math.abs(boid.position[0])
+        function nClosestBoids(boid, n) {
+            const sorted = boids.slice().sort((a, b) => {
+                return distance(boid, a) - distance(boid, b);
+            });
+            return sorted.slice(1, n + 1);
+        }
 
-  if (distanceToBoundary <= 0.5) {
-    dampingFactor = 0.5 + 0.5 * (distanceToBoundary / 0.5)
-  }
+        function keepWithinBounds(boid, width, height) {
+            if (boid.x < margin) boid.dx += turnFactor;
+            if (boid.x > width - margin) boid.dx -= turnFactor
+            if (boid.y < margin) boid.dy += turnFactor;
+            if (boid.y > height - margin) boid.dy -= turnFactor;
+        }
 
-  if (boid.position[0] < -boundary) {
-    ve[0] += dampingFactor
-  } else if (boid.position[0] > boundary) {
-    ve[0] -= dampingFactor
-  }
+        function flyTowardsCenter(boid) {
+            const centerX = boids.reduce((sum, b) => sum + b.x, 0) / numBoids;
+            const centerY = boids.reduce((sum, b) => sum + b.y, 0) / numBoids;
+            boid.dx += (centerX - boid.x) * centeringFactor;
+            boid.dy += (centerY - boid.y) * centeringFactor;
+        }
 
-  distanceToBoundary = boundary - Math.abs(boid.position[1])
+        function avoidOthers(boid) {
+            let moveX = 0;
+            let moveY = 0;
+            for (let otherBoid of boids) {
+                if (otherBoid !== boid) {
+                    if (distance(boid, otherBoid) < 20) {
+                        moveX += boid.x - otherBoid.x;
+                        moveY += boid.y - otherBoid.y;
+                    }
+                }
+            }
+            boid.dx += moveX * avoidFactor;
+            boid.dy += moveY * avoidFactor;
+        }
 
-  if (distanceToBoundary <= 0.5) {
-    dampingFactor = 0.5 + 0.5 * (distanceToBoundary / 0.5)
-  }
+        function matchVelocity(boid) {
+            let avgDX = 0;
+            let avgDY = 0;
+            let neighbors = 0;
 
-  if (boid.position[1] < -boundary) {
-    ve[1] += dampingFactor
-  } else if (boid.position[1] > boundary) {
-    ve[1] -= dampingFactor
-  }
+            for (let otherBoid of boids) {
+                if (otherBoid !== boid && distance(boid, otherBoid) < visualRange) {
+                    avgDX += otherBoid.dx;
+                    avgDY += otherBoid.dy;
+                    neighbors += 1;
+                }
+            }
 
-  return ve
-}
+            if (neighbors > 0) {
+                avgDX = avgDX / neighbors;
+                avgDY = avgDY / neighbors;
+                boid.dx += (avgDX - boid.dx) * matchingFactor;
+                boid.dy += (avgDY - boid.dy) * matchingFactor;
+            }
+        }
 
-/**
- * @param boid          input boid
- * @param repelForce    the magnitude of the reverse velocity to apply
- * If a boid reaches the wall, repel it in the opposite direction
- */
-function repelFromWalls(boid, repelForce) {
-    let repelVelocity = [0, 0, 0]
+        function limitSpeed(boid) {
+            const speed = Math.sqrt(boid.dx * boid.dx + boid.dy * boid.dy);
+            if (speed > maxSpeed) {
+                boid.dx = (boid.dx / speed) * maxSpeed;
+                boid.dy = (boid.dy / speed) * maxSpeed;
+            }
+            if (speed < minSpeed) {
+                boid.dx = (boid.dx / speed) * minSpeed;
+                boid.dy = (boid.dy / speed) * minSpeed;
+            }
+        }
 
-    if (boid.position[0] <= -1 * wall || boid.position[0] >= wall) {
-        repelVelocity[0] = boid.position[0] <= 0 ? repelForce : -repelForce
-    }
+        function updateBoid(boid, width, height) {
+            flyTowardsCenter(boid);
+            avoidOthers(boid);
+            matchVelocity(boid);
+            limitSpeed(boid);
+            keepWithinBounds(boid, width, height);
 
-    if (boid.position[1] <= -1 * wall || boid.position[1] >= wall) {
-        repelVelocity[1] = boid.position[1] <= 0 ? repelForce : -repelForce
-    }
+            boid.x += boid.dx;
+            boid.y += boid.dy;
 
-    return repelVelocity
-}
+            // Update color based on velocity
+            const speed = Math.sqrt(boid.dx * boid.dx + boid.dy * boid.dy);
+            const normalizedSpeed = (speed - minSpeed) / (maxSpeed - minSpeed);
+            boid.color = [normalizedSpeed, 1 - normalizedSpeed, 0.5, 1];
+        }
 
-/**
- * @param flockMates    array of flockMates
- * @param boid          input boid
- * Compute cohesion between flockmates
- */
-function computeCohesion(flockMates, boid) {
-    let avgPosition = [0,0,0]
-    flockMates.forEach(b => { 
-        avgPosition = add(avgPosition, b.position)
-    })
-    avgPosition = div(avgPosition, flockMates.length)
-    let v = sub(avgPosition, boid.position)
-    return v
-}
-/**
- * @param flockMates    array of flockMates
- * @param boid          input boid
- * Compute separation between flockmates based on inverse distance weighting
- */
-function computeSeparation(flockMates, boid) {
-    let weightedPositions = [0, 0, 0];
-    let wSum = 0;
+        function main() {
+            const canvas = document.getElementById('glcanvas');
+            const gl = canvas.getContext('webgl');
 
-    for (let i = 0; i < flockMates.length; i++) {
-        let d = getDistance(boid, flockMates[i])
-        let w = 1 / d;
-        wSum += w;
-        weightedPositions = add(weightedPositions, mul(flockMates[i].position, w))
-    }
+            if (!gl) {
+                alert('Unable to initialize WebGL. Your browser or machine may not support it.');
+                return;
+            }
 
-    if (flockMates.length === 1) {
-        wSum = 1 / getDistance(boid, flockMates[0])
-        weightedPositions = mul(boid.position, wSum)
-    }
+            const vertexShaderSource = document.getElementById('vertex-shader').text;
+            const fragmentShaderSource = document.getElementById('fragment-shader').text;
 
-    let d = div(weightedPositions, wSum)
-    let speed = mag(boid.velocity)
-    let desiredHeading = Math.atan2(boid.position[1] - d[1], boid.position[0] - d[0])
-    let desiredVelocity = [speed * Math.cos(desiredHeading), speed * Math.sin(desiredHeading), 0]
+            const vertexShader = createShader(gl, gl.VERTEX_SHADER, vertexShaderSource);
+            const fragmentShader = createShader(gl, gl.FRAGMENT_SHADER, fragmentShaderSource);
 
-    return desiredVelocity
-}
+            const program = createProgram(gl, vertexShader, fragmentShader);
 
-/**
- * @param flockMates    array of flockMates
- * @param boid          input boid
- * compute the alignment between flockmates
- */
-function computeAlignment(flockMates, boid) {
-    let avgVelocity = [0,0, 0]
-    flockMates.forEach(b => { 
-        avgVelocity = add(avgVelocity, b.velocity)
-    })
-    avgVelocity = div(avgVelocity, flockMates.length)
-    return avgVelocity
-}
+            const positionAttributeLocation = gl.getAttribLocation(program, 'a_position');
+            const resolutionUniformLocation = gl.getUniformLocation(program, 'u_resolution');
+            const translationUniformLocation = gl.getUniformLocation(program, 'u_translation');
+            const colorUniformLocation = gl.getUniformLocation(program, 'u_color');
 
-function createBoid(x, y, vx, vy) {
-    let boid = {
-        position: [x, y, 0],
-        velocity: [vx, vy, 0],
-        color: new Float32Array([0.5, 0.5, 0.5, 1]), // Initial neutral color
-        supportRadius: 0.05,
-    }
-    boid.acceleration = [0,0,0]
-    return boid
-}
+            const positionBuffer = gl.createBuffer();
 
-let boids = []
-for (let i = 0; i < numBoids; i++) {
-    boids.push(createBoid(Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1))
-}
+            gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 0]), gl.STATIC_DRAW);
 
-function draw(gl, program) {
-    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
-    gl.uniform4fv(gl.getUniformLocation(program, 'color'), blackBackground)
+            initBoids(canvas.width, canvas.height);
 
-    for (let i = 0; i < boids.length; i++) {
-        let boid = boids[i]
-        let flockMates = getFlockMates(boid)
+            function render() {
+                gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+                gl.clear(gl.COLOR_BUFFER_BIT);
 
-        let cohesion = computeCohesion(flockMates, boid)
-        let separation = computeSeparation(flockMates, boid)
-        let alignment = computeAlignment(flockMates, boid)
+                gl.useProgram(program);
+                gl. uniform2f(resolutionUniformLocation, gl.canvas.width, gl.canvas.height);
 
-        let boundingVelocity = getBoundingVelocity(boid)
-        let repelVelocity = repelFromWalls(boid, 0.1)
+                for (let boid of boids) {
+                    updateBoid(boid, canvas.width, canvas.height);
 
-        let acceleration = [
-            cohesion[0] * cWeight + separation[0] * sWeight + alignment[0] * aWeight + boundingVelocity[0] * bvWeight + repelVelocity[0],
-            cohesion[1] * cWeight + separation[1] * sWeight + alignment[1] * aWeight + boundingVelocity[1] * bvWeight + repelVelocity[1],
-            0
-        ]
+                    gl.uniform4fv(colorUniformLocation, boid.color);
+                    gl.uniform2f(translationUniformLocation, boid.x, boid.y);
 
-        boid.acceleration = acceleration
-        boid.velocity = eulerUpdateVelocity(boid.velocity, acceleration, 0.1)
-        boid.position = eulerUpdatePosition(boid.position, boid.velocity, 0.1)
+                    gl.enableVertexAttribArray(positionAttributeLocation);
+                    gl.vertexAttribPointer(positionAttributeLocation, 2, gl.FLOAT, false, 0, 0);
 
-        let newColor = computeBoidColor(boid, flockMates)
-        boid.color = newColor
-        gl.uniform4fv(gl.getUniformLocation(program, 'color'), newColor)
+                    gl.drawArrays(gl.POINTS, 0, 1);
+                }
 
-        // Draw the boid
-        gl.drawArrays(gl.POINTS, 0, 1)
-    }
-}
+                requestAnimationFrame(render);
+            }
 
-function main() {
-    let canvas = document.getElementById('canvas')
-    let gl = canvas.getContext('webgl')
+            render();
+        }
 
-    if (!gl) {
-        alert('WebGL not supported')
-        return
-    }
+        function createShader(gl, type, source) {
+            const shader = gl.createShader(type);
+            gl.shaderSource(shader, source);
+            gl.compileShader(shader);
+            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                alert('An error occurred compiling the shaders: ' + gl.getShaderInfoLog(shader));
+                return null;
+            }
+            return shader;
+        }
 
-    gl.clearColor(0, 0, 0, 1)
-    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
+        function createProgram(gl, vertexShader, fragmentShader) {
+            const program = gl.createProgram();
+            gl.attachShader(program, vertexShader);
+            gl.attachShader(program, fragmentShader);
+            gl.linkProgram(program);
+            if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+                alert('Unable to initialize the shader program: ' + gl.getProgramInfoLog(program));
+                return null;
+            }
+            return program;
+        }
 
-    let program = createProgram(gl, vertexShader, fragmentShader)
-    gl.useProgram(program)
-
-    let vertexBuffer = gl.createBuffer()
-    gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer)
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.01, -0.01, 0]), gl.STATIC_DRAW)
-
-    let positionLocation = gl.getAttribLocation(program, 'position')
-    gl.enableVertexAttribArray(positionLocation)
-    gl.vertexAttribPointer(positionLocation, 3, gl.FLOAT, false, 0, 0)
-
-    startTime = performance.now()
-    prevTime = startTime
-
-    function animate() {
-        let currentTime = performance.now()
-        let deltaTime = (currentTime - prevTime) / 1000
-        prevTime = currentTime
-
-        draw(gl, program)
-
-        frameCount++
-        requestAnimationFrame(animate)
-    }
-
-    animate()
-}
-
-main()
-
-</script>
+        main();
+    </script>
 </head>
 <body>
-    <canvas id="canvas" width="800" height="600"></canvas>
+    <canvas id="glcanvas" width="800" height="600"></canvas>
 </body>
 </html>
